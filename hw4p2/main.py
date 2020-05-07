@@ -42,10 +42,9 @@ def train(model, train_loader, criterion, optimizer):
         optimizer.zero_grad()
         x = x.to(device)
         y = y.to(device)
-        x_lens = x_lens.to(device)
-        y_lens = y_lens.to(device)
 
-        out, out_lens = model.encoder(x, x_lens)
+        # out, out_lens = model.encoder(x, x_lens)
+        out, out_lens = model(x, x_lens, y)
         loss = criterion(out, y, out_lens, y_lens)
         running_loss += loss.item()
         total += x.size(0)
@@ -65,8 +64,6 @@ def evaluation(model, val_loader, criterion):
     for x, y, x_lens, y_lens in val_loader:
         x = x.to(device)
         y = y.to(device)
-        x_lens = x_lens.to(device)
-        y_lens = y_lens.to(device)
 
         out, out_lens = model(x, x_lens)
         loss = criterion(out, y, out_lens, y_lens)
@@ -117,7 +114,7 @@ if __name__ == '__main__':
 
     ''' Build the model '''
     # decoder = CTCBeamDecoder(['$'] * (N_PHONEMES + 1), beam_width=10, blank_id=46, log_probs_input=True)
-    model = Seq2Seq(input_dim=40, vocab_size=len(LETTER_LIST), hidden_dim=128, isAttended=False)
+    model = Seq2Seq(input_dim=40, vocab_size=len(LETTER_LIST), isAttended=True)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss(reduction=None)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True, threshold=1e-2, factor=0.5)
@@ -142,8 +139,6 @@ if __name__ == '__main__':
     torch.save({
             'model_state_dict': best_model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            # 'hidden_size': hidden_size,
-            # 'n_layers': n_layers,
             'batch_size': batch_size,
             'best_loss': best_loss
             }, 'lstm_256_3linear_dp')

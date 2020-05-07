@@ -6,31 +6,22 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 class Attention(nn.Module):
-    '''
-    Attention is calculated using key, value and query from Encoder and decoder.
-    Below are the set of operations you need to perform for computing attention:
-        energy = bmm(key, query)
-        attention = softmax(energy)
-        context = bmm(attention, value)
-    '''
     def __init__(self):
         super(Attention, self).__init__()
 
     def forward(self, query, key, value, lens):
-        '''
-        :param query :(N, context_size) Query is the output of LSTMCell from Decoder
-        :param key: (N, T, key_size) Key Projection from Encoder per time step
-        :param value: (N, T, value_size) Value Projection from Encoder per time step
-        :return output: Attended Context
-        :return attention_mask: Attention mask that can be plotted
-        '''
-        # print(key.shape)
         energy = torch.bmm(key, query.unsqueeze(2)).squeeze()  # (N, T)
-        attention = nn.Softmax(1)(energy)  # (N, )
-        # print(attention.shape)
-        context = torch.bmm(attention, value)
-        attention_mask = None
-        return context, attention_mask
+        attention = nn.Softmax(1)(energy)  # (N, T)
+
+        N, T = attention.size()
+        attention_mask = torch.arange(T).unsqueeze(1) < torch.LongTensor(lens).unsqueeze(0)  # (T, N)
+        attention_mask = torch.transpose(attention_mask, 0, 1)
+
+        attention *= attention_mask
+        attention /= torch.sum(attention, dim=1, keepdim=True)
+
+        context = torch.bmm(attention.unsqueeze(1), value).squeeze()
+        return context, attention
 
 
 class pBLSTM(nn.Module):
@@ -75,16 +66,10 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    '''
-    As mentioned in a previous recitation, each forward call of decoder deals with just one time step,
-    thus we use LSTMCell instead of LSLTM here.
-    The output from the second LSTMCell can be used as query here for attention module.
-    In place of value that we get from the attention, this can be replace by context we get from the attention.
-    Methods like Gumble noise and teacher forcing can also be incorporated for improving the performance.
-    '''
     def __init__(self, vocab_size, hidden_dim, value_size=128, key_size=128, isAttended=False):
         super(Decoder, self).__init__()
         self.vocab_size = vocab_size
+        self.value_size = value_size
         self.embedding = nn.Embedding(vocab_size, hidden_dim, padding_idx=0)
         self.lstm1 = nn.LSTMCell(input_size=hidden_dim + value_size, hidden_size=hidden_dim)
         self.lstm2 = nn.LSTMCell(input_size=hidden_dim, hidden_size=key_size)
@@ -95,14 +80,7 @@ class Decoder(nn.Module):
 
         self.character_prob = nn.Linear(key_size + value_size, vocab_size)
 
-    def forward(self, key, values, lens, text=None, isTrain=True, teacher_force_rate=0.9):
-        '''
-        :param key :(N, T, key_size) Output of the Encoder Key projection layer
-        :param values: (N, T, value_size) Output of the Encoder Value projection layer
-        :param text: (N, text_len) Batch input of text with text_length
-        :param isTrain: Train or eval mode
-        :return predictions: Returns the character perdiction probability
-        '''
+    def forward(self, key, values, lens, text=None, isTrain=True, teacher_force=0.9):
         batch_size = key.shape[0]
 
         if isTrain:
@@ -114,33 +92,30 @@ class Decoder(nn.Module):
         predictions = []  # (N, max_len, self.vocab_size)
         hidden_states = [None, None]
         prediction = torch.zeros(batch_size, self.vocab_size).to(DEVICE)  # for 1 timestep
+        context = torch.zeros(batch_size, self.value_size).to(DEVICE)  # (N, self.value_size)
 
         for i in range(max_len):
-            # * Implement Gumble noise and teacher forcing techniques
-            # * When attention is True, replace values[i,:,:] with the context you get from attention.
-            # * If you haven't implemented attention yet, then you may want to check the index and break
-            #   out of the loop so you do you do not get index out of range errors.
-            if self.isAttended:
-                context, _ = self.attention(text[:, i], key, values, lens)
-            random_num = torch.rand(1)
-            # if
-            gumbel_noise = nn.functional.gumbel_softmax()
-
             if isTrain:
-                char_embed = embeddings[:, i, :]  # (N, hidden_dim)
+                random_num = torch.rand(1)
+                if random_num < teacher_force:  # use ground truth
+                    char_embed = embeddings[:, i, :]  # (N, hidden_dim)
+                else:  # use previous prediction
+                    prediction = nn.functional.gumbel_softmax(prediction)
+                    char_embed = self.embedding(prediction.argmax(dim=-1))  # greedy search
             else:
                 char_embed = self.embedding(prediction.argmax(dim=-1))
 
-            inp = torch.cat([char_embed, values[i, :, :]], dim=1)
+            inp = torch.cat([char_embed, context], dim=1) if self.isAttended else char_embed
             hidden_states[0] = self.lstm1(inp, hidden_states[0])
 
             inp_2 = hidden_states[0][0]
             hidden_states[1] = self.lstm2(inp_2, hidden_states[1])
 
-            ### Compute attention from the output of the second LSTM Cell ###
             output = hidden_states[1][0]
+            if self.isAttended:
+                context, attention_mask = self.attention(output, key, values, lens)
 
-            prediction = self.character_prob(torch.cat([output, values[i, :, :]], dim=1))
+            prediction = self.character_prob(torch.cat([output, context], dim=1))
             predictions.append(prediction.unsqueeze(1))
 
         return torch.cat(predictions, dim=1)

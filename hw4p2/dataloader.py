@@ -15,8 +15,7 @@ def load_data():
     return train, val, test, transcript_train, transcript_val
 
 
-def transform_letter_to_index(transcript, letter_list):
-    letter2index, index2letter = create_dictionaries(letter_list)
+def transform_letter_to_index(transcript, letter2index):
     letter_to_index_list = []
     for sentence in transcript:
         sentence_to_index = [letter2index['<sos>']]

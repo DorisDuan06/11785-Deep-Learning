@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.utils as utils
 
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 class Attention(nn.Module):
@@ -15,13 +15,13 @@ class Attention(nn.Module):
 
         N, T = attention.size()
         attention_mask = torch.arange(T).unsqueeze(1) < torch.LongTensor(lens).unsqueeze(0)  # (T, N)
-        attention_mask = torch.transpose(attention_mask, 0, 1)
+        attention_mask = torch.transpose(attention_mask, 0, 1).to(device)
 
-        attention *= attention_mask
-        attention /= torch.sum(attention, dim=1, keepdim=True)
+        mask_attention = attention * attention_mask
+        norm_attention = mask_attention / torch.sum(mask_attention, dim=1, keepdim=True)
 
-        context = torch.bmm(attention.unsqueeze(1), value).squeeze()
-        return context, attention
+        context = torch.bmm(norm_attention.unsqueeze(1), value).squeeze()
+        return context, norm_attention
 
 
 class pBLSTM(nn.Module):
@@ -91,10 +91,11 @@ class Decoder(nn.Module):
 
         predictions = []  # (N, max_len, self.vocab_size)
         hidden_states = [None, None]
-        prediction = torch.zeros(batch_size, self.vocab_size).to(DEVICE)  # for 1 timestep
-        context = torch.zeros(batch_size, self.value_size).to(DEVICE)  # (N, self.value_size)
+        prediction = torch.zeros(batch_size, self.vocab_size).to(device)  # for 1 timestep
+        context = torch.zeros(batch_size, self.value_size).to(device)  # (N, self.value_size)
+        attention_maps = []
 
-        for i in range(max_len):
+        for i in range(max_len-1):  # don't predict on '<eos>'
             if isTrain:
                 random_num = torch.rand(1)
                 if random_num < teacher_force:  # use ground truth
@@ -117,8 +118,9 @@ class Decoder(nn.Module):
 
             prediction = self.character_prob(torch.cat([output, context], dim=1))
             predictions.append(prediction.unsqueeze(1))
+            attention_maps.append(attention_mask)
 
-        return torch.cat(predictions, dim=1)
+        return torch.cat(predictions, dim=1), attention_maps
 
 
 class Seq2Seq(nn.Module):
